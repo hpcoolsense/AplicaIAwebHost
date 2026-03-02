@@ -5,6 +5,8 @@ import time
 import asyncio
 import threading
 import inspect
+import itertools
+import lighter
 from typing import Any, Callable, Dict, Optional, Tuple, List
 
 # ==========================================================
@@ -116,6 +118,57 @@ class LighterAPI:
         self._token_expires_at: float = 0.0
         self._client_lock = threading.Lock()
         self._signer_ctor_kwargs = self._prepare_signer_ctor_kwargs()
+        self._order_idx_lock = threading.Lock()
+        self._order_idx = itertools.count(int(time.time() * 1000) % 1000000)
+        self._diag = _env("LIGHTER_DIAG", "false").lower() == "true"
+        self._diag_once = False
+        self._api_client = None
+        self._order_api = None
+        self._market_cache: Dict[int, Dict[str, Any]] = {}
+
+        # HFT TLS Warmup & Async Pool initialization
+        try:
+            _ASYNC.run(self._ensure_client_and_token())
+            # Force pre-fetch market info to cache decimals and warm up HTTP connection
+            cfg = _token_cfg("ETH-USDT") # generic token fetch to warm up
+            _ASYNC.run(self._get_market_info(cfg["market_index"]))
+            print("[LIGHTER HFT] Async EventLoop & TLS Connection Pre-warmed.")
+        except Exception as e:
+            print(f"[LIGHTER HFT] Warmup failed: {e}")
+
+    async def _get_market_info(self, market_index: int) -> Dict[str, Any]:
+        if market_index in self._market_cache:
+            return self._market_cache[market_index]
+        if self._api_client is None:
+            self._api_client = lighter.ApiClient(configuration=lighter.Configuration(host=self.base_url))
+        if self._order_api is None:
+            self._order_api = lighter.OrderApi(self._api_client)
+        resp = await self._order_api.order_book_details(market_id=int(market_index))
+        details = []
+        if hasattr(resp, "order_book_details") and resp.order_book_details:
+            details = resp.order_book_details
+        elif hasattr(resp, "spot_order_book_details") and resp.spot_order_book_details:
+            details = resp.spot_order_book_details
+        info = {}
+        for item in details:
+            try:
+                if int(getattr(item, "market_id", -1)) != int(market_index):
+                    continue
+                info = {
+                    "size_decimals": int(getattr(item, "size_decimals")),
+                    "price_decimals": int(getattr(item, "price_decimals")),
+                    "min_base_amount": float(getattr(item, "min_base_amount")),
+                    "min_quote_amount": float(getattr(item, "min_quote_amount")),
+                }
+                break
+            except Exception:
+                continue
+        self._market_cache[market_index] = info
+        return info
+
+    def _next_client_order_index(self) -> int:
+        with self._order_idx_lock:
+            return next(self._order_idx) % 1000000
 
     def _prepare_signer_ctor_kwargs(self) -> Dict[str, Any]:
         params = inspect.signature(self._SignerClient.__init__).parameters
@@ -138,8 +191,75 @@ class LighterAPI:
             return {"accepted": False, "status": "rejected", "raw": resp}
         return {"accepted": True, "status": "accepted", "raw": resp}
 
+    def _build_create_order_req(self, *, cfg: Dict[str, Any], qty_base: float, price: float, is_ask: bool,
+                                order_type: Any, trigger_price: Optional[float] = None) -> Any:
+        from lighter.signer_client import CreateOrderTxReq
+
+        q_i = int(round(qty_base * (10**cfg["base_decimals"])))
+        p_i = int(round(price * (10**cfg["price_decimals"])))
+        trig_i = 0
+        if trigger_price is not None:
+            trig_i = int(round(trigger_price * (10**cfg["price_decimals"])))
+
+        # Algunos builds del SDK exponen CreateOrderTxReq como struct ctypes.
+        # Si _fields_ está presente, construimos por posición para evitar kwargs.
+        if self._diag and not self._diag_once:
+            sig = getattr(CreateOrderTxReq, "__text_signature__", None)
+            fields = getattr(CreateOrderTxReq, "_fields_", None)
+            print("[LIGHTER_DIAG] CreateOrderTxReq __text_signature__:", sig)
+            print("[LIGHTER_DIAG] CreateOrderTxReq type:", type(CreateOrderTxReq))
+            print("[LIGHTER_DIAG] CreateOrderTxReq _fields_:", fields)
+            self._diag_once = True
+
+        fields = getattr(CreateOrderTxReq, "_fields_", None)
+        if fields:
+            by_name = {
+                "MarketIndex": int(cfg["market_index"]),
+                "ClientOrderIndex": self._next_client_order_index(),
+                "BaseAmount": q_i,
+                "Price": p_i,
+                "IsAsk": 1 if is_ask else 0,
+                "Type": order_type,
+                "TimeInForce": self._client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                "ReduceOnly": 1,
+                "TriggerPrice": trig_i,
+                "OrderExpiry": -1,
+            }
+            req = CreateOrderTxReq()
+            for name, _ in fields:
+                setattr(req, name, by_name.get(name, 0))
+            return req
+
+        # Fallback kwargs (si no hay _fields_)
+        try:
+            return CreateOrderTxReq(
+                MarketIndex=int(cfg["market_index"]),
+                ClientOrderIndex=self._next_client_order_index(),
+                BaseAmount=q_i,
+                Price=p_i,
+                IsAsk=1 if is_ask else 0,
+                Type=order_type,
+                TimeInForce=self._client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                ReduceOnly=1,
+                TriggerPrice=trig_i,
+                OrderExpiry=-1,
+            )
+        except Exception:
+            return CreateOrderTxReq(
+                market_index=int(cfg["market_index"]),
+                client_order_index=self._next_client_order_index(),
+                base_amount=q_i,
+                price=p_i,
+                is_ask=1 if is_ask else 0,
+                order_type=order_type,
+                time_in_force=self._client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                reduce_only=True,
+                trigger_price=trig_i,
+                order_expiry=-1,
+            )
+
     # --- Market Order Standard ---
-    def place_market(self, symbol: str, side: str, qty_base: float, *, avg_exec_px: float) -> Dict[str, Any]:
+    def place_market(self, symbol: str, side: str, qty_base: float, *, avg_exec_px: float, is_close: bool = False, **kwargs) -> Dict[str, Any]:
         lock = self._client_lock
         if lock: lock.acquire()
         try:
@@ -159,6 +279,78 @@ class LighterAPI:
             return self._normalize_response(raw)
         finally:
             if lock: lock.release()
+
+    def place_limit(self, symbol: str, side: str, qty_base: float, price: float) -> Dict[str, Any]:
+        try:
+            async def _do():
+                await self._ensure_client_and_token()
+                cfg = _token_cfg(symbol)
+                info = await self._get_market_info(cfg["market_index"])
+                size_decimals = info.get("size_decimals", cfg["base_decimals"])
+                price_decimals = info.get("price_decimals", cfg["price_decimals"])
+                min_base = info.get("min_base_amount")
+                min_quote = info.get("min_quote_amount")
+                if min_base and qty_base < min_base:
+                    raise ValueError(f"Lighter min_base_amount {min_base} > qty {qty_base}")
+                if min_quote and (qty_base * price) < min_quote:
+                    raise ValueError(f"Lighter min_quote_amount {min_quote} > notional {qty_base * price}")
+                is_ask = bool(side.upper() in ["SELL", "SHORT"])
+                res = await self._client.create_order(
+                    int(cfg["market_index"]),
+                    self._next_client_order_index(),
+                    int(round(qty_base * (10**size_decimals))),
+                    int(round(price * (10**price_decimals))),
+                    1 if is_ask else 0,
+                    self._client.ORDER_TYPE_LIMIT,
+                    self._client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    0,  # <-- reduce_only = FALSE para Spot
+                    0,
+                    -1,
+                )
+                if self._diag:
+                    print("[LIGHTER_DIAG] create_order(limit) result:", res)
+                return res
+            return {"accepted": True, "raw": _ASYNC.run(_do())}
+        except Exception as e:
+            print(f"[LIGHTER LIMIT ERROR]: {e}")
+            return {"accepted": False}
+
+    def place_stop(self, symbol: str, side: str, qty_base: float, trigger_price: float) -> Dict[str, Any]:
+        try:
+            async def _do():
+                await self._ensure_client_and_token()
+                cfg = _token_cfg(symbol)
+                info = await self._get_market_info(cfg["market_index"])
+                size_decimals = info.get("size_decimals", cfg["base_decimals"])
+                price_decimals = info.get("price_decimals", cfg["price_decimals"])
+                min_base = info.get("min_base_amount")
+                min_quote = info.get("min_quote_amount")
+                is_ask = bool(side.upper() in ["SELL", "SHORT"])
+                # Ejecuta a mercado con un colchón mucho más apretado (0.5% en lugar de 5%)
+                exec_price = trigger_price * (0.995 if is_ask else 1.005)
+                if min_base and qty_base < min_base:
+                    raise ValueError(f"Lighter min_base_amount {min_base} > qty {qty_base}")
+                if min_quote and (qty_base * exec_price) < min_quote:
+                    raise ValueError(f"Lighter min_quote_amount {min_quote} > notional {qty_base * exec_price}")
+                res = await self._client.create_order(
+                    int(cfg["market_index"]),
+                    self._next_client_order_index(),
+                    int(round(qty_base * (10**size_decimals))),
+                    int(round(exec_price * (10**price_decimals))),
+                    1 if is_ask else 0,
+                    self._client.ORDER_TYPE_STOP_LOSS_LIMIT,
+                    self._client.ORDER_TIME_IN_FORCE_GOOD_TILL_TIME,
+                    0,  # <-- reduce_only = FALSE para Spot
+                    int(round(trigger_price * (10**price_decimals))),
+                    -1,
+                )
+                if self._diag:
+                    print("[LIGHTER_DIAG] create_order(stop) result:", res)
+                return res
+            return {"accepted": True, "raw": _ASYNC.run(_do())}
+        except Exception as e:
+            print(f"[LIGHTER STOP ERROR]: {e}")
+            return {"accepted": False}
 
     # --- Stop Loss Individual (Marketable Limit) ---
     def create_sl_order(self, symbol: str, side: str, qty: float, trigger_price: float) -> Dict[str, Any]:

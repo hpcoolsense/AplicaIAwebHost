@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import time
 import json
+import uuid
 import requests
 from typing import Dict, Any, Optional, List
 
@@ -16,6 +17,8 @@ from requests.adapters import HTTPAdapter
 # =========================
 _BASE = os.getenv("PACIFICA_REST_URL", "https://api.pacifica.fi/api/v1").strip()
 _ORDER_PATH = os.getenv("PACIFICA_ORDER_PATH", "/orders/create_market").strip()
+_ORDER_CREATE_PATH = "/orders/create"
+_ORDER_STOP_CREATE_PATH = "/orders/stop/create"
 
 _JSON_SEPARATORS = (",", ":")
 
@@ -85,6 +88,9 @@ class PacificaClient:
         # URLs precomputadas para escritura
         self._url_order = f"{base}{order_path}"
         self._url_tpsl = f"{base}{tpsl_path}"
+        self._url_order_create = f"{base}{_ORDER_CREATE_PATH}"
+        self._url_order_stop_create = f"{base}{_ORDER_STOP_CREATE_PATH}"
+        self._url_order_create = f"{base}{_ORDER_CREATE_PATH}"
 
         # URLs precomputadas para lectura (status.py)
         self._url_get_orders = f"{base}/orders"
@@ -109,6 +115,10 @@ class PacificaClient:
         # Headers fijos
         self._headers_market = {"Content-Type": "application/json", "type": "create_market_order"}
         self._headers_tpsl = {"Content-Type": "application/json", "type": "set_position_tpsl"}
+        self._headers_create = {"Content-Type": "application/json", "type": "create_order"}
+        self._headers_stop_create = {"Content-Type": "application/json", "type": "create_stop_order"}
+        self._diag = os.getenv("PACIFICA_DIAG", "false").lower() == "true"
+        self._headers_create = {"Content-Type": "application/json", "type": "create_order"}
 
         # Validación de entorno
         missing = []
@@ -139,19 +149,23 @@ class PacificaClient:
             "data": op_data,
         }
 
+        if self._diag:
+            print("[PACIFICA_DIAG] op_type:", op_type)
+            print("[PACIFICA_DIAG] data_to_sign:", data_to_sign)
+
         compact_bytes = json.dumps(_sort_json(data_to_sign), separators=_JSON_SEPARATORS).encode("utf-8")
         sig = self._agent_kp.sign_message(compact_bytes)
         signature_b58 = base58.b58encode(bytes(sig)).decode("ascii")
 
-        return {
+        header = {
             "account": self.account,
-            "agent_wallet": self.agent_wallet,
             "signature": signature_b58,
             "timestamp": int(timestamp),
             "expiry_window": int(self.expiry_ms),
-            "**op_data": op_data, # Nota: asegurate que la API espera op_data aplanado o anidado. Tu código original lo aplanaba con **op_data
-            **op_data
         }
+        if self.agent_wallet:
+            header["agent_wallet"] = self.agent_wallet
+        return {**header, **op_data}
 
     # =========================================================================
     # 📖 MÉTODOS DE LECTURA (GET) - NECESARIOS PARA STATUS.PY
@@ -212,7 +226,7 @@ class PacificaClient:
     # ⚡ MÉTODOS DE ESCRITURA (POST / SIGNED)
     # =========================================================================
 
-    def place_market(self, *, symbol: str, side: str, base_qty: float) -> Dict[str, Any]:
+    def place_market(self, *, symbol: str, side: str, base_qty: float, is_close: bool = False, **kwargs) -> Dict[str, Any]:
         """Ejecuta orden de mercado firmada."""
         if base_qty is None or base_qty <= 0:
             raise ValueError("Pacifica.place_market: base_qty inválida")
@@ -228,7 +242,7 @@ class PacificaClient:
             "amount": amount_str,
             "side": side_str,
             "slippage_percent": self.slippage_percent,
-            "reduce_only": self.reduce_only,
+            "reduce_only": is_close or self.reduce_only,
         }
 
         body = self._build_signature(op_type, op_data)
@@ -308,6 +322,107 @@ class PacificaClient:
 
         return r.json()
 
+    def place_limit(self, symbol: str, side: str, base_qty: float, price: float) -> Dict[str, Any]:
+        s_up = side.upper()
+        side_str = "bid" if s_up in ("BUY", "BID", "LONG") else "ask"
+        op_data = {
+            "symbol": symbol.upper(),
+            "amount": f"{base_qty:.8f}".rstrip("0").rstrip("."),
+            "price": f"{price:.8f}".rstrip("0").rstrip("."),
+            "side": side_str,
+            "tif": "GTC",
+            "reduce_only": False,
+            "client_order_id": str(uuid.uuid4())
+        }
+        return self._post_create(op_data)
+
+    def place_stop(self, symbol: str, side: str, base_qty: float, stop_price: float) -> Dict[str, Any]:
+        s_up = side.upper()
+        side_str = "bid" if s_up in ("BUY", "BID", "LONG") else "ask"
+
+        op_data = {
+            "symbol": symbol.upper(),
+            "side": side_str,
+            "reduce_only": False,
+            "stop_order": {
+                "stop_price": f"{stop_price:.2f}",
+                "amount": f"{base_qty:.8f}".rstrip("0").rstrip("."),
+                "client_order_id": str(uuid.uuid4()),
+            },
+        }
+        return self._post_stop_create(op_data)
+
+    def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
+        op_data = {
+            "symbol": symbol.upper(),
+            "order_id": str(order_id)
+        }
+        body = self._build_signature("cancel_order", op_data)
+        payload = json.dumps(body, separators=_JSON_SEPARATORS).encode("utf-8")
+        url = f"{self.base}/orders/cancel"
+        r = self._session.post(url, data=payload, headers={"Content-Type": "application/json", "type": "cancel_order"}, timeout=self._timeout)
+        if not (200 <= r.status_code < 300):
+            print(f"[Pacifica] cancel_order error: {r.status_code} {r.text}")
+        return r.json()
+
+    def cancel_stop_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
+        op_data = {
+            "symbol": symbol.upper(),
+            "order_id": str(order_id)
+        }
+        body = self._build_signature("cancel_stop_order", op_data)
+        payload = json.dumps(body, separators=_JSON_SEPARATORS).encode("utf-8")
+        url = f"{self.base}/orders/stop/cancel"
+        r = self._session.post(url, data=payload, headers={"Content-Type": "application/json", "type": "cancel_stop_order"}, timeout=self._timeout)
+        if not (200 <= r.status_code < 300):
+            print(f"[Pacifica] cancel_stop_order error: {r.status_code} {r.text}")
+        return r.json()
+
+    def _post_create(self, op_data: Dict[str, Any]) -> Dict[str, Any]:
+        clean = {k: v for k, v in op_data.items() if v is not None}
+        body = self._build_signature("create_order", clean)
+        payload = json.dumps(body, separators=_JSON_SEPARATORS).encode("utf-8")
+        if self._diag:
+            debug_body = dict(body)
+            if "signature" in debug_body:
+                debug_body["signature"] = "<redacted>"
+            print("[PACIFICA_DIAG] POST", self._url_order_create)
+            print("[PACIFICA_DIAG] headers:", self._headers_create)
+            print("[PACIFICA_DIAG] body:", debug_body)
+        r = self._session.post(
+            self._url_order_create,
+            data=payload,
+            headers=self._headers_create,
+            timeout=self._timeout,
+            allow_redirects=False,
+        )
+        if not (200 <= r.status_code < 300):
+            raise requests.HTTPError(f"create_order failed: status={r.status_code} resp={r.text[:500]}")
+        return r.json()
+
+    def _post_stop_create(self, op_data: Dict[str, Any]) -> Dict[str, Any]:
+        clean = {k: v for k, v in op_data.items() if v is not None}
+        if isinstance(clean.get("stop_order"), dict):
+            clean["stop_order"] = {k: v for k, v in clean["stop_order"].items() if v is not None}
+        body = self._build_signature("create_stop_order", clean)
+        payload = json.dumps(body, separators=_JSON_SEPARATORS).encode("utf-8")
+        if self._diag:
+            debug_body = dict(body)
+            if "signature" in debug_body:
+                debug_body["signature"] = "<redacted>"
+            print("[PACIFICA_DIAG] POST", self._url_order_stop_create)
+            print("[PACIFICA_DIAG] headers:", self._headers_stop_create)
+            print("[PACIFICA_DIAG] body:", debug_body)
+        r = self._session.post(
+            self._url_order_stop_create,
+            data=payload,
+            headers=self._headers_stop_create,
+            timeout=self._timeout,
+            allow_redirects=False,
+        )
+        if not (200 <= r.status_code < 300):
+            raise requests.HTTPError(f"create_stop_order failed: status={r.status_code} resp={r.text[:500]}")
+        return r.json()
 
 # Alias para compatibilidad
 PacificaAPI = PacificaClient
