@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Agendar reunión — Aplica IA</title>
+  <meta name="description" content="Agendá una reunión gratuita con el equipo de Aplica IA. Te mostramos cómo automatizar tu estudio contable." />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⬡</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'DM Sans', -apple-system, sans-serif;
+      background: #FAFAFA;
+      color: #1d1d1f;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+
+    .nav {
+      position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+      background: rgba(240,240,240,0.75);
+      backdrop-filter: blur(12px) saturate(1.2);
+      -webkit-backdrop-filter: blur(12px) saturate(1.2);
+      border-bottom: 1px solid rgba(0,0,0,0.06);
+    }
+    .nav-inner {
+      max-width: 1280px; margin: 0 auto; padding: 0 24px;
+      height: 44px; display: flex; align-items: center; justify-content: space-between;
+    }
+    .nav-logo {
+      font-family: 'Inter', sans-serif; font-weight: 800; font-size: 20px;
+      color: #0A84FF; text-decoration: none; display: flex; align-items: center;
+    }
+    .nav-logo .co { font-size: 10px; font-weight: 500; color: #aeaeb2; margin-left: 3px; vertical-align: baseline; }
+    .nav-back {
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 500;
+      color: #6e6e73; text-decoration: none; transition: color 0.2s;
+    }
+    .nav-back:hover { color: #1d1d1f; }
+
+    .page { max-width: 780px; margin: 0 auto; padding: 100px 24px 80px; }
+
+    .page-label {
+      font-family: 'DM Sans', sans-serif; font-size: 13px; font-weight: 600;
+      color: #0A84FF; letter-spacing: 0.08em; text-transform: uppercase;
+      text-align: center; margin-bottom: 12px;
+    }
+    .page-title {
+      font-family: 'Inter', sans-serif; font-weight: 700;
+      font-size: clamp(2rem, 4vw, 3rem); letter-spacing: -0.04em;
+      line-height: 1.05; text-align: center; margin-bottom: 12px;
+      background: linear-gradient(135deg, #1d1d1f, #6e6e73 80%);
+      -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .page-subtitle {
+      font-size: 16px; color: #6e6e73; text-align: center;
+      max-width: 480px; margin: 0 auto 32px; line-height: 1.6;
+    }
+
+    /* Step indicator */
+    .steps {
+      display: flex; justify-content: center; align-items: center; gap: 8px;
+      margin-bottom: 28px;
+    }
+    .step-dot {
+      width: 8px; height: 8px; border-radius: 50%;
+      background: rgba(0,0,0,0.15); transition: all 0.3s ease;
+    }
+    .step-dot.active { background: #0A84FF; width: 24px; border-radius: 4px; }
+    .step-dot.done { background: #34C759; }
+
+    /* Form card */
+    .form-card {
+      background: #fff; border: 1px solid rgba(0,0,0,0.06);
+      border-radius: 20px; padding: 36px 32px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.04);
+      max-width: 480px; margin: 0 auto;
+    }
+    .form-row { margin-bottom: 16px; }
+    .form-row label {
+      display: block; font-family: 'DM Sans', sans-serif;
+      font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+      text-transform: uppercase; color: #6e6e73; margin-bottom: 6px;
+    }
+    .form-row input {
+      width: 100%; padding: 12px 14px; border-radius: 10px;
+      border: 1px solid rgba(0,0,0,0.1); background: #FAFAFA;
+      font-family: 'DM Sans', sans-serif; font-size: 15px; color: #1d1d1f;
+      outline: none; transition: border-color 0.2s, background 0.2s;
+    }
+    .form-row input:focus {
+      border-color: #0A84FF; background: #fff;
+      box-shadow: 0 0 0 3px rgba(10,132,255,0.1);
+    }
+    .form-row input::placeholder { color: #aeaeb2; }
+    .form-hp { position: absolute; opacity: 0; height: 0; pointer-events: none; }
+
+    .submit-btn {
+      width: 100%; padding: 14px 24px; border-radius: 100px;
+      background: #0A84FF; color: #fff; border: none; cursor: pointer;
+      font-family: 'Inter', sans-serif; font-weight: 700; font-size: 15px;
+      letter-spacing: -0.02em; margin-top: 8px;
+      box-shadow: 0 4px 20px rgba(10,132,255,0.3);
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+    .submit-btn:hover { transform: scale(1.02); box-shadow: 0 6px 28px rgba(10,132,255,0.4); }
+    .submit-btn:active { transform: scale(0.98); }
+    .submit-btn:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
+
+    /* Duration badge */
+    .duration-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      margin: 0 auto 24px; padding: 8px 18px; border-radius: 100px;
+      background: rgba(10,132,255,0.08); border: 1px solid rgba(10,132,255,0.2);
+      color: #0A84FF; font-family: 'Inter', sans-serif; font-weight: 600;
+      font-size: 13px; letter-spacing: -0.01em;
+    }
+    .duration-badge { display: flex; justify-content: center; width: fit-content; margin-left: auto; margin-right: auto; }
+    .duration-dot {
+      width: 8px; height: 8px; border-radius: 50%; background: #0A84FF;
+      box-shadow: 0 0 8px rgba(10,132,255,0.5);
+    }
+
+    /* Cal embed */
+    .cal-wrapper {
+      background: #fff;
+      border: 1px solid rgba(0,0,0,0.06);
+      border-radius: 20px;
+      overflow: hidden;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.04);
+      min-height: 650px;
+    }
+
+    .hidden { display: none !important; }
+
+    .footer {
+      border-top: 1px solid rgba(0,0,0,0.06); padding: 24px;
+      text-align: center; margin-top: 60px;
+    }
+    .footer span { font-size: 12px; color: #aeaeb2; }
+
+    @media (max-width: 768px) {
+      .page { padding: 80px 16px 60px; }
+      .form-card { padding: 28px 22px; }
+      .cal-wrapper { min-height: 500px; border-radius: 14px; }
+    }
+
+    /* Fade animation */
+    .fade-in {
+      animation: fadeIn 0.5s cubic-bezier(0.25, 0.1, 0, 1);
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(12px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="nav">
+    <div class="nav-inner">
+      <a href="/" class="nav-logo">Aplica IA<span class="co">Co.</span></a>
+      <a href="/" class="nav-back">&larr; Volver a inicio</a>
+    </div>
+  </header>
+
+  <main class="page">
+    <p class="page-label">// Agendar reunión</p>
+    <h1 class="page-title" id="page-title">Empecemos por conocerte.</h1>
+    <p class="page-subtitle" id="page-subtitle">Completá tus datos y elegí el horario que mejor te quede.</p>
+
+    <div class="steps">
+      <div class="step-dot active" id="dot-1"></div>
+      <div class="step-dot" id="dot-2"></div>
+    </div>
+
+    <!-- STEP 1: Form -->
+    <div id="step-form" class="form-card fade-in">
+      <form id="lead-form">
+        <input class="form-hp" name="_hp" tabindex="-1" autocomplete="off" />
+
+        <div class="form-row">
+          <label>Nombre completo</label>
+          <input type="text" name="name" placeholder="Tu nombre" required />
+        </div>
+
+        <div class="form-row">
+          <label>E-mail</label>
+          <input type="email" name="email" placeholder="tu@email.com" required />
+        </div>
+
+        <div class="form-row">
+          <label>WhatsApp</label>
+          <input type="tel" name="phone" placeholder="+54 9 11 ..." required />
+        </div>
+
+        <button type="submit" class="submit-btn" id="submit-btn">
+          Continuar al calendario &rarr;
+        </button>
+      </form>
+    </div>
+
+    <!-- STEP 2: Calendar -->
+    <div id="step-calendar" class="hidden">
+      <div class="duration-badge">
+        <span class="duration-dot"></span>
+        Reunión de 30 minutos
+      </div>
+      <div class="cal-wrapper" id="cal-embed"></div>
+    </div>
+  </main>
+
+  <footer class="footer">
+    <span>APLICA IA Co. &copy; 2026</span>
+  </footer>
+
+  <!-- Supabase + Cal.com -->
+  <script type="text/javascript">
+    var SUPABASE_URL = 'https://fxnadonczxslmwwtrefc.supabase.co';
+    var SUPABASE_ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ4bmFkb25jenhzbG13d3RyZWZjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDIyNTIxNTUsImV4cCI6MjA1NzgyODE1NX0.bZnJHdcCfv6XpVTUFxuMOdH2OLaciiKOkbz7DFhJkmA';
+
+    var openedAt = Date.now();
+    var leadData = { name: '', email: '', phone: '' };
+    var CAL_LINK = "marcos-briones-zlmq3t/30min";
+
+    // Cal.com bootstrap
+    (function (C, A, L) { let p = function (a, ar) { a.q.push(ar); }; let d = C.document; C.Cal = C.Cal || function () { let cal = C.Cal; let ar = arguments; if (!cal.loaded) { cal.ns = {}; cal.q = cal.q || []; d.head.appendChild(d.createElement("script")).src = A; cal.loaded = true; } if (ar[0] === L) { const api = function () { p(api, arguments); }; const namespace = ar[1]; api.q = api.q || []; if(typeof namespace === "string"){cal.ns[namespace] = cal.ns[namespace] || api;p(cal.ns[namespace], ar);p(cal, ["initNamespace", namespace]);} else p(cal, ar); return;} p(cal, ar); }; })(window, "https://app.cal.com/embed/embed.js", "init");
+
+    function loadCal() {
+      var el = document.getElementById("cal-embed");
+      el.innerHTML = "";
+      Cal("init", { origin: "https://cal.com" });
+      Cal("inline", {
+        elementOrSelector: "#cal-embed",
+        calLink: CAL_LINK,
+        layout: "month_view",
+        config: {
+          theme: "light",
+          name: leadData.name,
+          email: leadData.email,
+          'metadata[phone]': leadData.phone,
+          notes: "Teléfono / WhatsApp: " + leadData.phone,
+        }
+      });
+      Cal("ui", {
+        theme: "light",
+        styles: { branding: { brandColor: "#0A84FF" } },
+        hideEventTypeDetails: false,
+        layout: "month_view"
+      });
+    }
+
+    document.getElementById("lead-form").addEventListener("submit", async function(e) {
+      e.preventDefault();
+      var form = e.target;
+      var btn = document.getElementById("submit-btn");
+
+      // Honeypot
+      if (form._hp.value) return;
+      // Time check
+      if (Date.now() - openedAt < 2000) return;
+
+      leadData.name = form.name.value.trim();
+      leadData.email = form.email.value.trim();
+      leadData.phone = form.phone.value.trim();
+
+      btn.disabled = true;
+      btn.textContent = "Enviando...";
+
+      // Send lead to Supabase (fire and forget — no blocking)
+      try {
+        fetch(SUPABASE_URL + "/functions/v1/send-contact", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer " + SUPABASE_ANON,
+          },
+          body: JSON.stringify({
+            name: leadData.name,
+            email: leadData.email,
+            phone: leadData.phone,
+            _t: openedAt,
+          })
+        }).catch(function(){});
+      } catch (err) {}
+
+      // Switch to step 2
+      document.getElementById("step-form").classList.add("hidden");
+      var stepCal = document.getElementById("step-calendar");
+      stepCal.classList.remove("hidden");
+      stepCal.classList.add("fade-in");
+
+      document.getElementById("page-title").textContent = "Elegí el horario que te quede mejor.";
+      document.getElementById("page-subtitle").textContent = "Sin compromiso. Te mostramos cómo funciona con tu operación real.";
+
+      document.getElementById("dot-1").classList.remove("active");
+      document.getElementById("dot-1").classList.add("done");
+      document.getElementById("dot-2").classList.add("active");
+
+      // Load calendar with prefill
+      loadCal();
+
+      // Scroll to top of step
+      window.scrollTo({ top: 80, behavior: 'smooth' });
+    });
+  </script>
+
+</body>
+</html>
